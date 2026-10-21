@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Everyday Demo Store API",
-    "version": "1.0.0",
-    "description": "Local ecommerce sandbox for testing agents. No authentication or real payments. Create a cart, add products, optionally apply a coupon, then checkout. All prices are INR rupees. Carts, orders, inventory and checkout idempotency records persist in data/store.json. OpenAPI can be imported by an OpenAPI-to-MCP adapter; this file is not itself an MCP server. Reset removes all carts/orders and restores seeded inventory."
+    "version": "1.1.0",
+    "description": "Ecommerce sandbox for testing agents. No authentication or real payments. Create a cart, add products, optionally apply a coupon, then checkout. All prices are INR rupees. Carts, orders, inventory and checkout idempotency records persist in PostgreSQL when DATABASE_URL is configured, or data/store.json locally. OpenAPI can be imported by an OpenAPI-to-MCP adapter; this file is not itself an MCP server. Reset removes all carts/orders and restores seeded inventory."
   },
   "servers": [
     {
@@ -32,7 +32,7 @@
     "/api/health": {
       "get": {
         "operationId": "getHealth",
-        "summary": "Check that the store is running",
+        "summary": "Check the store and its storage connection",
         "tags": [
           "Testing"
         ],
@@ -52,12 +52,21 @@
                     },
                     "mode": {
                       "type": "string"
+                    },
+                    "storage": {
+                      "type": "string",
+                      "enum": [
+                        "file",
+                        "memory",
+                        "postgres"
+                      ]
                     }
                   },
                   "required": [
                     "status",
                     "service",
-                    "mode"
+                    "mode",
+                    "storage"
                   ]
                 }
               }

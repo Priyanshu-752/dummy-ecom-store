@@ -1,10 +1,11 @@
 # Everyday demo store
 
-A local ecommerce sandbox for testing browser agents and API agents. No login, external services, real payments, or runtime dependencies. Requires Node.js 22 or newer.
+A demo ecommerce sandbox for testing browser agents and API agents. No login or real payments. Requires Node.js 22 or newer. Local development uses a JSON file; Render uses PostgreSQL through the `pg` package.
 
 ## Run
 
 ```powershell
+npm.cmd ci
 npm.cmd start
 ```
 
@@ -18,7 +19,7 @@ Open **http://localhost:3000**. The same Node process serves `public/` and the b
 - Standard delivery: ₹99; free when the subtotal after discount is at least ₹2,500. Express delivery: ₹199.
 - Checkout with contact/address fields and simulated test payment or cash on delivery. No card details needed. No real emails or shipments are sent.
 - Optional simulated payment decline, stock checks, checkout retry protection, order lookup, cancellation with stock restoration.
-- Carts, orders, stock, and idempotency records persist in `data/store.json`. The browser keeps its cart ID in localStorage. Separate agents can create independent carts.
+- Carts, orders, stock, and idempotency records persist in `data/store.json` locally, or PostgreSQL when `DATABASE_URL` is configured. The browser keeps its cart ID in localStorage. Separate agents can create independent carts.
 
 All prices and totals use **INR rupees, not paise**. Cart contents do not reserve stock; checkout checks availability again. There are no product variants: clothing uses the demo size in its description. Tax is included in listed prices; no additional tax is added. Order states are `confirmed` and `cancelled`; delivery tracking is not simulated. This is an unauthenticated local sandbox, so order listing intentionally exposes all demo orders.
 
@@ -69,3 +70,17 @@ Reload the browser after resetting; it will create a fresh cart automatically.
 ## Project files
 
 `backend/server.mjs` contains the HTTP server and store behavior. `backend/catalog.mjs` contains seed products. `public/` contains the frontend and local SVG product illustrations. `backend/openapi.mjs` generates the API descriptions (`npm.cmd run schema`). `scripts/generate-assets.mjs` regenerates the product illustrations (`node scripts/generate-assets.mjs`).
+
+## Render deployment
+
+The frontend and API run together on one Node web service. A separate Render PostgreSQL database stores the sandbox state. `backend/storage.mjs` stores the state in a singleton JSONB row; every API operation runs inside a transaction with a row lock, so cart updates, checkout inventory, cancellation, and idempotency records commit together. Responses are sent only after commit. This is intended for a small agent-testing sandbox, not a high-throughput production store.
+
+The deployment configuration is in `render.yaml`. It specifies free compute, Singapore for both resources, `npm ci && npm test && npm run schema` for builds, `npm start` to launch, and `/api/health` for health checks. Set `DATABASE_URL` to the database's internal connection URL in Render's Environment settings. Credentials must remain in Render, never in the repository. `NODE_VERSION` is pinned to 24.13.0. Render binds on `0.0.0.0` and supplies `PORT`.
+
+The schema generator uses Render's `RENDER_EXTERNAL_URL` (or `PUBLIC_API_URL`) during builds. It serves the deployed OpenAPI at `/openapi.render.yaml` and `/openapi.render.json`, and also uses the deployed URL in the standard schema files on Render. To generate a separate deployed collection locally while keeping the localhost collection:
+
+```powershell
+node backend/openapi.mjs --server https://YOUR-SERVICE.onrender.com
+```
+
+Render's free web service sleeps after 15 minutes of inactivity; the first request can take about a minute. Free PostgreSQL expires 30 days after creation. See [Render's free-tier documentation](https://render.com/docs/free). Upgrade the database in Render before expiration if you need to keep testing beyond that period.

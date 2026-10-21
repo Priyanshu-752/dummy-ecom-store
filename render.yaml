@@ -1,0 +1,26 @@
+# Free Render PostgreSQL expires after 30 days. The web service sleeps when idle.
+# This mirrors the manually deployed resources in the existing Dummy Ecom project.
+services:
+  - type: web
+    name: dummy-ecom-store
+    runtime: node
+    region: singapore
+    plan: free
+    buildCommand: npm ci && npm test && npm run schema
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.13.0
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dummy-ecom-db
+          property: connectionString
+databases:
+  - name: dummy-ecom-db
+    databaseName: everyday_5m20
+    region: singapore
+    plan: free
+    ipAllowList: []

@@ -22,11 +22,11 @@ const shippingMethod = {type:'string',enum:['standard','express'],default:'stand
 const paymentMethod = {type:'string',enum:['test_card','cash_on_delivery'],default:'test_card',description:'Both methods are simulated. No real card details or payment processor.'};
 export const spec = {
   openapi:'3.0.3',
-  info:{title:'Everyday Demo Store API',version:'1.0.0',description:'Local ecommerce sandbox for testing agents. No authentication or real payments. Create a cart, add products, optionally apply a coupon, then checkout. All prices are INR rupees. Carts, orders, inventory and checkout idempotency records persist in data/store.json. OpenAPI can be imported by an OpenAPI-to-MCP adapter; this file is not itself an MCP server. Reset removes all carts/orders and restores seeded inventory.'},
+  info:{title:'Everyday Demo Store API',version:'1.1.0',description:'Ecommerce sandbox for testing agents. No authentication or real payments. Create a cart, add products, optionally apply a coupon, then checkout. All prices are INR rupees. Carts, orders, inventory and checkout idempotency records persist in PostgreSQL when DATABASE_URL is configured, or data/store.json locally. OpenAPI can be imported by an OpenAPI-to-MCP adapter; this file is not itself an MCP server. Reset removes all carts/orders and restores seeded inventory.'},
   servers:[{url:'http://localhost:3000',description:'Local Node server (change URL if using another PORT or an adapter in Docker).'}],
   tags:['Catalog','Cart','Checkout','Orders','Testing'].map(name=>({name})),
   paths:{
-    '/api/health':{get:op('getHealth','Check that the store is running','Testing',object({status:string(),service:string(),mode:string()}))},
+    '/api/health':{get:op('getHealth','Check the store and its storage connection','Testing',object({status:string(),service:string(),mode:string(),storage:{type:'string',enum:['file','memory','postgres']}}))},
     '/api/categories':{get:op('listCategories','List product categories','Catalog',object({categories:array(string())}))},
     '/api/products':{get:op('listProducts','Search, filter and sort products','Catalog',object({products:array(ref('Product')),total:{type:'integer'},page:{type:'integer'},limit:{type:'integer'},pages:{type:'integer'}}),{parameters:[query('q',string(),'Case-insensitive search in product name and description.'),query('category',string(),'Exact category name from listCategories.'),query('minPrice',{type:'number',minimum:0}),query('maxPrice',{type:'number',minimum:0}),query('inStock',{type:'boolean',default:false}),query('sort',{type:'string',enum:['featured','price_asc','price_desc','rating','name'],default:'featured'}),query('page',{type:'integer',minimum:1,default:1}),query('limit',{type:'integer',minimum:1,maximum:100,default:12})]})},
     '/api/products/{productId}':{parameters:[pathParam('productId')],get:op('getProduct','Get product details and current stock','Catalog',ref('Product'))},
@@ -55,6 +55,20 @@ function yaml(value, depth=0) {
   if (value&&typeof value==='object') return Object.entries(value).map(([k,v])=>`${pad}${JSON.stringify(k)}:${typeof v==='object'&&v!==null?'\n'+yaml(v,depth+1):' '+JSON.stringify(v)}`).join('\n');
   return `${pad}${JSON.stringify(value)}`;
 }
-writeFileSync(new URL('../openapi.yaml',import.meta.url), yaml(spec)+'\n');
-writeFileSync(new URL('../openapi.json',import.meta.url), JSON.stringify(spec,null,2)+'\n');
-console.log(`Generated OpenAPI YAML and JSON: ${Object.keys(spec.paths).length} paths.`);
+const serverFlag = process.argv.indexOf('--server');
+const deployedUrl = serverFlag >= 0 ? process.argv[serverFlag + 1] : process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL;
+let deployed;
+if (deployedUrl) {
+  const url = new URL(deployedUrl);
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('The server URL must use HTTP or HTTPS.');
+  deployed = structuredClone(spec);
+  deployed.servers = [{ url: url.origin, description: 'Deployed Render sandbox; no authentication required.' }];
+}
+const primary = process.env.RENDER && deployed ? deployed : spec;
+writeFileSync(new URL('../openapi.yaml',import.meta.url), yaml(primary)+'\n');
+writeFileSync(new URL('../openapi.json',import.meta.url), JSON.stringify(primary,null,2)+'\n');
+if (deployed) {
+  writeFileSync(new URL('../openapi.render.yaml',import.meta.url), yaml(deployed)+'\n');
+  writeFileSync(new URL('../openapi.render.json',import.meta.url), JSON.stringify(deployed,null,2)+'\n');
+}
+console.log(`Generated OpenAPI YAML and JSON: ${Object.keys(spec.paths).length} paths.${deployed ? ' Render collection generated.' : ''}`);

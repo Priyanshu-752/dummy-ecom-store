@@ -4,11 +4,16 @@
   "private": true,
   "type": "module",
   "description": "A local ecommerce sandbox for browser and API agents",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node backend/server.mjs",
     "dev": "node --watch backend/server.mjs",
     "test": "node --test tests/*.test.mjs",
     "schema": "node backend/openapi.mjs"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
   }
 }
