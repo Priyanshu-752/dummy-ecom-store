@@ -5,21 +5,38 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { seedProducts } from './catalog.mjs';
 import { createFileStore, createPostgresStore, freshState } from './storage.mjs';
+import { agentSettings, websiteOrigin, websiteCartSession, signCartProof } from './commerce-agent.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+try { process.loadEnvFile(path.join(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const fresh = () => freshState(seedProducts);
 class ApiError extends Error { constructor(status, code, message) { super(message); Object.assign(this, { status, code }); } }
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
 const quantity = value => { if (!Number.isInteger(value) || value < 1 || value > 99) fail(400, 'INVALID_QUANTITY', 'Quantity must be an integer from 1 to 99.'); return value; };
 const textField = (object, key, max = 200) => { const v = object?.[key]; if (typeof v !== 'string' || !v.trim() || v.length > max) fail(400, 'VALIDATION_ERROR', `${key} is required and must be at most ${max} characters.`); return v.trim(); };
 
-export function createStoreServer({ dataFile = path.join(root, 'data/store.json'), storage = createFileStore(dataFile, fresh) } = {}) {
+export function createStoreServer({ dataFile = path.join(root, 'data/store.json'), storage = createFileStore(dataFile, fresh), commerceAgent = agentSettings(), upstreamOrigin = '' } = {}) {
   const server = http.createServer(async (req, res) => {
-    const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+    const send = (status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers }); res.end(JSON.stringify(body)); };
     try {
       const url = new URL(req.url, 'http://localhost');
       const p = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       const method = req.method;
+      if (upstreamOrigin && url.pathname.startsWith('/api/')) {
+        const localOrigin = `http://${req.headers.host}`;
+        if (req.headers.origin && req.headers.origin !== localOrigin) fail(403, 'ORIGIN_NOT_ALLOWED', 'Use this storefront origin for API requests.');
+        if (req.headers['sec-fetch-site'] === 'cross-site') fail(403, 'ORIGIN_NOT_ALLOWED', 'Use this storefront origin for API requests.');
+        const target = new URL(url.pathname + url.search, upstreamOrigin);
+        const headers = { Accept: 'application/json', ...(req.headers.cookie ? { Cookie: req.headers.cookie } : {}), ...(req.headers.origin ? { Origin: target.origin } : {}), ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}), ...(req.headers['idempotency-key'] ? { 'Idempotency-Key': req.headers['idempotency-key'] } : {}) };
+        let raw = '';
+        if (!['GET', 'HEAD'].includes(method)) for await (const chunk of req) { raw += chunk; if (raw.length > 32768) fail(413, 'BODY_TOO_LARGE', 'Request body exceeds 32KB.'); }
+        const remote = await fetch(target, { method, headers, ...(!['GET', 'HEAD'].includes(method) ? { body: raw } : {}), signal: AbortSignal.timeout(90000), redirect: 'error' });
+        const cookies = remote.headers.getSetCookie();
+        const loopback = ['localhost', '127.0.0.1'].includes(new URL(localOrigin).hostname);
+        res.writeHead(remote.status, { 'Content-Type': remote.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store', ...(cookies.length ? { 'Set-Cookie': cookies.map(cookie => loopback ? cookie.replace(/;\s*Secure/ig, '') : cookie) } : {}) });
+        res.end(Buffer.from(await remote.arrayBuffer()));
+        return;
+      }
       if (method === 'OPTIONS') { res.writeHead(204, { 'Allow': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' }); res.end(); return; }
       let body = {};
       if (['POST', 'PUT', 'PATCH'].includes(method)) {
@@ -31,11 +48,22 @@ export function createStoreServer({ dataFile = path.join(root, 'data/store.json'
         const result = await storage.run(async session => {
         let state = session.state;
         const save = () => { session.state = state; session.save(); };
+        const responseHeaders = {};
         // Buffer the HTTP response until the database transaction commits successfully.
-        const send = (status, body) => ({ status, body });
+        const send = (status, body) => ({ status, body, headers: responseHeaders });
         const product = id => state.products.find(p => p.id === id) || fail(404, 'PRODUCT_NOT_FOUND', 'Product not found.');
         const cart = id => (Object.hasOwn(state.carts, id) && state.carts[id]) || fail(404, 'CART_NOT_FOUND', 'Cart not found. Create a new cart first.');
         const order = id => (Object.hasOwn(state.orders, id) && state.orders[id]) || fail(404, 'ORDER_NOT_FOUND', 'Order not found.');
+        const newCart = () => {
+          const c = { id: randomUUID(), items: [], coupon: null, createdAt: new Date().toISOString() };
+          state.carts[c.id] = c;
+          return c;
+        };
+        const websiteCart = () => {
+          const result = websiteCartSession(state, req.headers.cookie, newCart, websiteOrigin(req, commerceAgent).startsWith('https:'));
+          if (result.cookie) { responseHeaders['Set-Cookie'] = result.cookie; save(); }
+          return result.cart;
+        };
         function cartView(c) {
           const items = c.items.map(i => ({ ...i, product: product(i.productId), lineTotal: product(i.productId).price * i.quantity }));
           const subtotal = items.reduce((s, i) => s + i.lineTotal, 0);
@@ -44,6 +72,17 @@ export function createStoreServer({ dataFile = path.join(root, 'data/store.json'
           return { ...c, items, itemCount: items.reduce((s, i) => s + i.quantity, 0), subtotal, discount, shipping, total: subtotal - discount + shipping, currency: 'INR' };
         }
         if (p.length === 2 && p[1] === 'health' && method === 'GET') return send(200, { status: 'ok', service: 'everyday-demo-store', mode: 'sandbox', storage: storage.kind });
+        if (url.pathname === '/api/commerce-agent/config' && method === 'GET') return send(200, { installationId: commerceAgent.installationId, serviceUrl: commerceAgent.serviceUrl, mode: 'bubble', bridgeConfigured: !!commerceAgent.bridgeSecret });
+        if (url.pathname === '/api/website/cart' && method === 'GET') {
+          if (req.headers['sec-fetch-site'] === 'cross-site') fail(403, 'ORIGIN_NOT_ALLOWED', 'Read the website cart from this store.');
+          return send(200, cartView(websiteCart()));
+        }
+        if (url.pathname === '/api/commerce-agent/cart-proof' && method === 'POST') {
+          if (req.headers.origin !== websiteOrigin(req, commerceAgent)) fail(403, 'ORIGIN_NOT_ALLOWED', 'Cart proofs require a same-origin website request.');
+          if (typeof body.challenge !== 'string' || !/^[A-Za-z0-9_-]{20,128}$/.test(body.challenge) || Object.keys(body).some(key => key !== 'challenge')) fail(400, 'INVALID_CHALLENGE', 'Send only the short-lived agent challenge. Cart IDs are resolved from the website session.');
+          if (!commerceAgent.bridgeSecret) fail(503, 'BRIDGE_NOT_CONFIGURED', 'The store server signing secret is not configured.');
+          return send(200, { token: signCartProof({ challenge: body.challenge, cartId: websiteCart().id, settings: commerceAgent }) });
+        }
         if (p.length === 2 && p[1] === 'categories' && method === 'GET') return send(200, { categories: [...new Set(state.products.map(p => p.category))] });
         if (p.length === 2 && p[1] === 'products' && method === 'GET') {
           const q = (url.searchParams.get('q') || '').toLowerCase();
@@ -63,7 +102,7 @@ export function createStoreServer({ dataFile = path.join(root, 'data/store.json'
         }
         if (p.length === 3 && p[1] === 'products' && method === 'GET') return send(200, product(p[2]));
         if (p.length === 2 && p[1] === 'carts' && method === 'POST') {
-          const c = { id: randomUUID(), items: [], coupon: null, createdAt: new Date().toISOString() }; state.carts[c.id] = c; save(); return send(201, cartView(c));
+          const c = newCart(); save(); return send(201, cartView(c));
         }
         if (p[1] === 'carts' && p[2]) {
           const c = cart(p[2]);
@@ -124,7 +163,7 @@ export function createStoreServer({ dataFile = path.join(root, 'data/store.json'
         }
         return send(404, { error: { code: 'NOT_FOUND', message: 'API route not found.' } });
         });
-        return send(result.status, result.body);
+        return send(result.status, result.body, result.headers);
       }
       if (method !== 'GET' && method !== 'HEAD') return send(405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'Use GET for static resources.' } });
       const specRoutes = ['/openapi.yaml', '/openapi.json', '/openapi.render.yaml', '/openapi.render.json'];
@@ -141,7 +180,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const port = Number(process.env.PORT || 3000), host = process.env.HOST || (process.env.RENDER ? '0.0.0.0' : '127.0.0.1');
   if (process.env.RENDER && !process.env.DATABASE_URL) throw new Error('DATABASE_URL is required on Render to preserve store data.');
   const storage = process.env.DATABASE_URL ? await createPostgresStore(process.env.DATABASE_URL, fresh) : createFileStore(process.env.DATA_FILE || path.join(root, 'data/store.json'), fresh);
-  const server = createStoreServer({ storage });
+  const server = createStoreServer({ storage, upstreamOrigin: process.env.STORE_API_UPSTREAM || '' });
   server.on('error', err => { console.error(err.message); process.exitCode = 1; });
   server.listen(port, host, () => console.log(`Everyday store listening on ${host}:${port} (${storage.kind})`));
   for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { server.close(async () => { await storage.close(); process.exit(0); }); server.closeIdleConnections(); });

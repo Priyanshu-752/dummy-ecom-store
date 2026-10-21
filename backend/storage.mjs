@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
-export const freshState = products => ({ products: structuredClone(products), carts: {}, orders: {}, idempotency: {} });
+export const freshState = products => ({ products: structuredClone(products), carts: {}, orders: {}, idempotency: {}, websiteSessions: {} });
 
 // A single transaction covers each API request, including all stock and cart changes.
 export function createFileStore(dataFile, seed) {

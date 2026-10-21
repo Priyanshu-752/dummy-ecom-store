@@ -14,6 +14,12 @@ services:
         value: 24.13.0
       - key: HOST
         value: 0.0.0.0
+      - key: COMMERCE_AGENT_INSTALLATION_ID
+        value: avxXbN6qieNtdT8kT8B8Vh1b0wp5h7tU
+      - key: COMMERCE_AGENT_SERVICE_URL
+        value: http://127.0.0.1:5199
+      - key: COMMERCE_AGENT_BRIDGE_SECRET
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: dummy-ecom-db
