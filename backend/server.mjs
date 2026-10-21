@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -15,15 +16,16 @@ const fail = (status, code, message) => { throw new ApiError(status, code, messa
 const quantity = value => { if (!Number.isInteger(value) || value < 1 || value > 99) fail(400, 'INVALID_QUANTITY', 'Quantity must be an integer from 1 to 99.'); return value; };
 const textField = (object, key, max = 200) => { const v = object?.[key]; if (typeof v !== 'string' || !v.trim() || v.length > max) fail(400, 'VALIDATION_ERROR', `${key} is required and must be at most ${max} characters.`); return v.trim(); };
 
-export function createStoreServer({ dataFile = path.join(root, 'data/store.json'), storage = createFileStore(dataFile, fresh), commerceAgent = agentSettings(), upstreamOrigin = '' } = {}) {
-  const server = http.createServer(async (req, res) => {
+export function createStoreServer({ dataFile = path.join(root, 'data/store.json'), storage = createFileStore(dataFile, fresh), commerceAgent = agentSettings(), upstreamOrigin = '', tls } = {}) {
+  const createServer = tls ? handler => https.createServer(tls, handler) : handler => http.createServer(handler);
+  const server = createServer(async (req, res) => {
     const send = (status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers }); res.end(JSON.stringify(body)); };
     try {
       const url = new URL(req.url, 'http://localhost');
       const p = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       const method = req.method;
       if (upstreamOrigin && url.pathname.startsWith('/api/')) {
-        const localOrigin = `http://${req.headers.host}`;
+        const localOrigin = `${req.socket.encrypted ? 'https' : 'http'}://${req.headers.host}`;
         if (req.headers.origin && req.headers.origin !== localOrigin) fail(403, 'ORIGIN_NOT_ALLOWED', 'Use this storefront origin for API requests.');
         if (req.headers['sec-fetch-site'] === 'cross-site') fail(403, 'ORIGIN_NOT_ALLOWED', 'Use this storefront origin for API requests.');
         const target = new URL(url.pathname + url.search, upstreamOrigin);
@@ -33,7 +35,7 @@ export function createStoreServer({ dataFile = path.join(root, 'data/store.json'
         const remote = await fetch(target, { method, headers, ...(!['GET', 'HEAD'].includes(method) ? { body: raw } : {}), signal: AbortSignal.timeout(90000), redirect: 'error' });
         const cookies = remote.headers.getSetCookie();
         const loopback = ['localhost', '127.0.0.1'].includes(new URL(localOrigin).hostname);
-        res.writeHead(remote.status, { 'Content-Type': remote.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store', ...(cookies.length ? { 'Set-Cookie': cookies.map(cookie => loopback ? cookie.replace(/;\s*Secure/ig, '') : cookie) } : {}) });
+        res.writeHead(remote.status, { 'Content-Type': remote.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store', ...(cookies.length ? { 'Set-Cookie': cookies.map(cookie => loopback && !req.socket.encrypted ? cookie.replace(/;\s*Secure/ig, '') : cookie) } : {}) });
         res.end(Buffer.from(await remote.arrayBuffer()));
         return;
       }
@@ -181,7 +183,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (process.env.RENDER && !process.env.DATABASE_URL) throw new Error('DATABASE_URL is required on Render to preserve store data.');
   const storage = process.env.DATABASE_URL ? await createPostgresStore(process.env.DATABASE_URL, fresh) : createFileStore(process.env.DATA_FILE || path.join(root, 'data/store.json'), fresh);
   const server = createStoreServer({ storage, upstreamOrigin: process.env.STORE_API_UPSTREAM || '' });
+  const servers = [server];
   server.on('error', err => { console.error(err.message); process.exitCode = 1; });
   server.listen(port, host, () => console.log(`Everyday store listening on ${host}:${port} (${storage.kind})`));
-  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { server.close(async () => { await storage.close(); process.exit(0); }); server.closeIdleConnections(); });
+  if (!process.env.RENDER && process.env.LOCAL_TLS_KEY && process.env.LOCAL_TLS_CERT) {
+    const securePort = Number(process.env.LOCAL_HTTPS_PORT || 3443);
+    const secureServer = createStoreServer({ storage, upstreamOrigin: process.env.STORE_API_UPSTREAM || '', tls: { key: readFileSync(path.resolve(root, process.env.LOCAL_TLS_KEY)), cert: readFileSync(path.resolve(root, process.env.LOCAL_TLS_CERT)) } });
+    secureServer.on('error', err => { console.error(err.message); process.exitCode = 1; });
+    secureServer.listen(securePort, host, () => console.log(`HTTPS agent test store: https://localhost:${securePort}`));
+    servers.push(secureServer);
+  }
+  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
+    Promise.all(servers.map(server => new Promise(resolve => { server.close(resolve); server.closeIdleConnections(); }))).then(async () => { await storage.close(); process.exit(0); });
+  });
 }

@@ -117,6 +117,8 @@ Copy the real secret from the merchant console: **Test → Set up your shared we
 
 Both the local and Render stores are intentionally configured to use the agent service on `127.0.0.1:5199`, as requested. The agent service must therefore run on the computer opening either storefront. This is a developer test setup. For customers on other computers, deploy the agent service to a public HTTPS origin and change `COMMERCE_AGENT_SERVICE_URL`; their `127.0.0.1` will refer to their own computer. Browser local-network permissions may also affect an HTTPS storefront connecting to loopback.
 
+On the Render page, click **Connect shopping assistant** to initiate the local-service connection and allow Chrome's local-network/loopback permission for this store when prompted. This permission cannot be silently granted by the website. With a public HTTPS agent-service URL, the widget mounts automatically and this development-only connection button is not used. See [Chrome's Local Network Access documentation](https://developer.chrome.com/blog/local-network-access).
+
 ### What was added
 
 1. `GET /api/website/cart` resolves or creates the shopper's cart from an opaque HttpOnly, SameSite cookie. HTTPS cookies also use Secure. The browser no longer chooses the authoritative cart ID from localStorage. Anonymous sessions persist with the store state in PostgreSQL on Render.
@@ -129,7 +131,7 @@ The proof endpoint and website-session helpers are browser integration endpoints
 
 ### Verify it yourself
 
-1. Start the agent service on port 5199 and this store on port 3000. Open `http://localhost:3000`.
+1. Start the agent service on port 5199 and this store. For the published widget, open `https://localhost:3443`; the merchant console requires HTTPS storefront origins. The ordinary HTTP store remains at port 3000 for other tests.
 2. In the merchant Test screen, verify the website cart using the live preview challenge and the token returned by the store proof endpoint in that shopper's browser session. Publish the installation once the merchant console reports successful verification. The storefront origin must be permitted by the installation.
 3. Add a mug using the normal store button. Open the assistant and ask it to show your cart: the same mug and quantity should appear.
 4. Ask the assistant to add a notebook. Open the normal store bag and confirm that it appears there immediately.
@@ -141,6 +143,8 @@ The installation currently has no hosted-checkout tool mapped. This store's norm
 The connected MCP server calls the Render API. For this integration test, the local `.env` also sets `STORE_API_UPSTREAM=https://dummy-ecom-store.onrender.com`. The local Node server forwards `/api/` requests to that backend, preserving the shopper's cart cookie and checking the local origin before forwarding proof requests. This keeps local storefront carts in the same database the MCP tools use. It means local browsing requires the Render service to be available. Remove this setting for the original standalone local backend; in that mode, the agent's MCP tools must also target that same local backend, otherwise they cannot find its cart IDs. Do not set `STORE_API_UPSTREAM` on the Render service itself.
 
 The developer verification page is `/agent-setup.html` on either storefront. It reads the current cart and generates a proof for a pasted merchant preview challenge without exposing the server signing secret.
+
+The optional HTTPS local listener uses `LOCAL_HTTPS_PORT`, `LOCAL_TLS_CERT`, and `LOCAL_TLS_KEY`. Its development certificate/key live under ignored `data/` and are never deployed. The current certificate is self-signed for localhost and 127.0.0.1; the user must approve the local certificate in their browser before opening the page. No global certificate store or browser security settings are changed. The installation permits `https://localhost:3443`, `https://127.0.0.1:3443`, and the Render origin. HTTP localhost is rejected by the merchant console's published-site origin policy.
 
 ### What other websites need
 

@@ -14,7 +14,7 @@ export function agentSettings(env = process.env) {
   };
 }
 export function websiteOrigin(req, settings) {
-  return settings.storeOrigin ? new URL(settings.storeOrigin).origin : new URL(`http://${req.headers.host}`).origin;
+  return settings.storeOrigin ? new URL(settings.storeOrigin).origin : new URL(`${req.socket.encrypted ? 'https' : 'http'}://${req.headers.host}`).origin;
 }
 export function websiteCartSession(state, cookieHeader, createCart, secure, now = Date.now()) {
   state.websiteSessions ??= {};
