@@ -73,6 +73,12 @@ Reload the browser after resetting; it will create a fresh cart automatically.
 
 ## Render deployment
 
+Live store and API: **https://dummy-ecom-store.onrender.com**
+
+Deployed API collections: [openapi.render.yaml](./openapi.render.yaml) and [openapi.render.json](./openapi.render.json). They are also downloadable at https://dummy-ecom-store.onrender.com/openapi.render.yaml and https://dummy-ecom-store.onrender.com/openapi.render.json. The localhost collections remain in `openapi.yaml` and `openapi.json`.
+
+Render project: **Dummy Ecom / Production**. Web service: `dummy-ecom-store`; PostgreSQL: `dummy-ecom-db`. The free database expires **November 20, 2026**.
+
 The frontend and API run together on one Node web service. A separate Render PostgreSQL database stores the sandbox state. `backend/storage.mjs` stores the state in a singleton JSONB row; every API operation runs inside a transaction with a row lock, so cart updates, checkout inventory, cancellation, and idempotency records commit together. Responses are sent only after commit. This is intended for a small agent-testing sandbox, not a high-throughput production store.
 
 The deployment configuration is in `render.yaml`. It specifies free compute, Singapore for both resources, `npm ci && npm test && npm run schema` for builds, `npm start` to launch, and `/api/health` for health checks. Set `DATABASE_URL` to the database's internal connection URL in Render's Environment settings. Credentials must remain in Render, never in the repository. `NODE_VERSION` is pinned to 24.13.0. Render binds on `0.0.0.0` and supplies `PORT`.
@@ -84,3 +90,11 @@ node backend/openapi.mjs --server https://YOUR-SERVICE.onrender.com
 ```
 
 Render's free web service sleeps after 15 minutes of inactivity; the first request can take about a minute. Free PostgreSQL expires 30 days after creation. See [Render's free-tier documentation](https://render.com/docs/free). Upgrade the database in Render before expiration if you need to keep testing beyond that period.
+
+Run an end-to-end check against the deployed backend:
+
+```powershell
+node scripts/smoke-test.mjs https://dummy-ecom-store.onrender.com --expect-postgres
+```
+
+This creates demo carts and orders, exercises a coupon, payment failure, idempotent checkout and competing stock purchases, then cancels its orders and restores inventory. It leaves cancelled test orders available for inspection and does not reset unrelated sandbox data.
